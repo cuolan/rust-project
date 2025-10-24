@@ -9,31 +9,102 @@ struct Word {
     group: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WordTable {
+    name: String,
+    words: Vec<Word>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct FlashMemory {
-    groups: HashMap<String, Vec<Word>>,
+    groups: HashMap<String, Vec<WordTable>>,
 }
 
 impl FlashMemory {
     fn new() -> Self {
-        FlashMemory {
-            groups: HashMap::new(),
-        }
+        FlashMemory { groups: HashMap::new() }
     }
 
     fn add_word(&mut self, word: Word) {
-        self.groups
-            .entry(word.group.clone())
-            .or_insert_with(Vec::new)
-            .push(word);
+        // 保持向后兼容，暂时不使用
     }
 
-    fn get_groups(&self) -> Vec<&String> {
-        self.groups.keys().collect()
+    fn create_group_if_absent(&mut self, group: &str) {
+        self.groups.entry(group.to_string()).or_insert_with(Vec::new);
     }
 
-    fn get_words_in_group(&self, group: &str) -> Option<&Vec<Word>> {
-        self.groups.get(group)
+    fn create_word_table(&mut self, group: &str, table_name: &str) {
+        let tables = self.groups.entry(group.to_string()).or_insert_with(Vec::new);
+        let mut name = table_name.to_string();
+        let mut idx = 1;
+        while tables.iter().any(|t| t.name == name) {
+            idx += 1;
+            name = format!("{}{}", table_name, idx);
+        }
+        tables.push(WordTable {
+            name,
+            words: Vec::new(),
+        });
+    }
+
+    fn rename_group(&mut self, old: &str, new: &str) -> Result<(), &'static str> {
+        if old == new { return Ok(()); }
+        if self.groups.contains_key(new) { return Err("分组名已存在"); }
+        if let Some(tables) = self.groups.remove(old) {
+            self.groups.insert(new.to_string(), tables);
+            Ok(())
+        } else {
+            Err("原分组不存在")
+        }
+    }
+
+    fn rename_word_table(&mut self, group: &str, old_name: &str, new_name: &str) -> Result<(), &'static str> {
+        if old_name == new_name { return Ok(()); }
+        if let Some(tables) = self.groups.get_mut(group) {
+            if tables.iter().any(|t| t.name == new_name) {
+                return Err("单词表名已存在");
+            }
+            if let Some(table) = tables.iter_mut().find(|t| t.name == old_name) {
+                table.name = new_name.to_string();
+                Ok(())
+            } else {
+                Err("单词表不存在")
+            }
+        } else {
+            Err("分组不存在")
+        }
+    }
+
+    fn delete_group(&mut self, group: &str) -> Result<(), &'static str> {
+        if self.groups.remove(group).is_some() {
+            Ok(())
+        } else {
+            Err("分组不存在")
+        }
+    }
+
+    fn delete_word_table(&mut self, group: &str, table_name: &str) -> Result<(), &'static str> {
+        if let Some(tables) = self.groups.get_mut(group) {
+            if let Some(pos) = tables.iter().position(|t| t.name == table_name) {
+                tables.remove(pos);
+                Ok(())
+            } else {
+                Err("单词表不存在")
+            }
+        } else {
+            Err("分组不存在")
+        }
+    }
+
+    fn get_groups(&self) -> Vec<&String> { self.groups.keys().collect() }
+
+    fn get_word_tables_in_group(&self, group: &str) -> Option<&Vec<WordTable>> { 
+        self.groups.get(group) 
+    }
+
+    fn get_words_in_group(&self, group: &str) -> Option<&Vec<Word>> { 
+        // 保持向后兼容，暂时返回None
+        None
     }
 
     fn save_to_file(&self, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -52,44 +123,69 @@ impl FlashMemory {
 struct FlashMemoryApp {
     flash_memory: FlashMemory,
     current_group: Option<String>,
-    
-    // UI状态
-    show_add_word_dialog: bool,
-    new_english: String,
-    new_chinese: String,
-    new_group: String,
-    
-    // 闪记状态
-    is_flashing: bool,
-    current_word_index: usize,
-    show_meaning: bool,
-    
-    // 鼠标悬停状态
-    hovered_word: Option<usize>,
+    current_word_table: Option<String>,
     
     // 消息显示
     message: String,
     message_timer: f32,
+
+    // 分组重命名
+    renaming_group_active: bool,
+    renaming_input: String,
+
+    // 单词表重命名
+    renaming_word_table_active: bool,
+    renaming_word_table_input: String,
+
+    // 右键菜单状态
+    context_menu_group: Option<String>,
+    show_context_menu: bool,
+    context_menu_pos: egui::Pos2,
+    
+    // 单词表右键菜单状态
+    context_menu_word_table: Option<(String, String)>, // (group, word_table)
+    show_word_table_context_menu: bool,
+    word_table_context_menu_pos: egui::Pos2,
+    
+    // 可拖动分界线的宽度
+    sidebar_width: f32,
+    
+    // 单词表编辑相关
+    editing_word_table: Option<(String, String)>, // (group, word_table)
+    word_table_content: String,
+    
+    // 新建单词表相关
+    creating_new_word_table: Option<String>, // 正在为哪个分组创建新单词表
+    new_word_table_name: String, // 新单词表名称输入框
 }
 
 impl Default for FlashMemoryApp {
     fn default() -> Self {
-        let flash_memory = FlashMemory::load_from_file("words.json")
-            .unwrap_or_else(|_| FlashMemory::new());
-        
+        let flash_memory = FlashMemory::load_from_file("words.json").unwrap_or_else(|_| FlashMemory::new());
         Self {
             flash_memory,
             current_group: None,
-            show_add_word_dialog: false,
-            new_english: String::new(),
-            new_chinese: String::new(),
-            new_group: String::new(),
-            is_flashing: false,
-            current_word_index: 0,
-            show_meaning: false,
-            hovered_word: None,
+            current_word_table: None,
             message: String::new(),
             message_timer: 0.0,
+            renaming_group_active: false,
+            renaming_input: String::new(),
+            renaming_word_table_active: false,
+            renaming_word_table_input: String::new(),
+            context_menu_group: None,
+            show_context_menu: false,
+            context_menu_pos: egui::Pos2::ZERO,
+            context_menu_word_table: None,
+            show_word_table_context_menu: false,
+            word_table_context_menu_pos: egui::Pos2::ZERO,
+            
+            sidebar_width: 150.0,
+            
+            editing_word_table: None,
+            word_table_content: String::new(),
+            
+            creating_new_word_table: None,
+            new_word_table_name: String::new(),
         }
     }
 }
@@ -99,225 +195,378 @@ impl eframe::App for FlashMemoryApp {
         // 更新消息计时器
         if self.message_timer > 0.0 {
             self.message_timer -= ctx.input(|i| i.unstable_dt);
-            if self.message_timer <= 0.0 {
-                self.message.clear();
-            }
+            if self.message_timer <= 0.0 { self.message.clear(); }
         }
 
-        // 主面板
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // 设置字体大小
-            let mut style = (*ctx.style()).clone();
-            style.text_styles.insert(
-                egui::TextStyle::Heading,
-                egui::FontId::new(24.0, egui::FontFamily::Proportional),
-            );
-            style.text_styles.insert(
-                egui::TextStyle::Body,
-                egui::FontId::new(16.0, egui::FontFamily::Proportional),
-            );
-            style.text_styles.insert(
-                egui::TextStyle::Button,
-                egui::FontId::new(14.0, egui::FontFamily::Proportional),
-            );
-            ctx.set_style(style);
+        // 全局文字样式
+        let mut style = (*ctx.style()).clone();
+        style.text_styles.insert(egui::TextStyle::Heading, egui::FontId::new(20.0, egui::FontFamily::Proportional));
+        style.text_styles.insert(egui::TextStyle::Body, egui::FontId::new(16.0, egui::FontFamily::Proportional));
+        style.text_styles.insert(egui::TextStyle::Button, egui::FontId::new(14.0, egui::FontFamily::Proportional));
+        ctx.set_style(style);
 
-            // 标题
-            ui.heading("单词闪记系统");
-            ui.separator();
-
-            // 显示消息
-            if !self.message.is_empty() {
-                ui.colored_label(egui::Color32::DARK_GREEN, &self.message);
-                ui.separator();
-            }
-
-            // 分组选择区域
-            let groups = self.flash_memory.get_groups();
-            let groups_clone: Vec<String> = groups.iter().map(|s| s.to_string()).collect();
+        // 左侧目录侧栏 - 使用可拖动的宽度
+        egui::SidePanel::left("sidebar")
+            .min_width(150.0)
+            .max_width(300.0)
+            .default_width(self.sidebar_width)
+            .resizable(true)
+            .show(ctx, |ui| {
+            // 顶部"目录"标题 - 悬停时直接显示为加号
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label("分组:");
+                let resp = ui.allocate_response(egui::Vec2::new(60.0, 20.0), egui::Sense::click_and_drag());
                 
-                let has_groups = !groups_clone.is_empty();
-                if has_groups {
-                    for group in &groups_clone {
-                        let is_selected = self.current_group.as_ref() == Some(group);
-                        if ui.selectable_label(is_selected, group.as_str()).clicked() {
-                            self.current_group = Some(group.to_string());
+                if resp.hovered() {
+                    // 悬停时显示加号
+                    ui.painter().text(
+                        resp.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "+",
+                        egui::FontId::proportional(18.0),
+                        egui::Color32::DARK_BLUE,
+                    );
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    
+                    // 点击创建新分组
+                    if resp.clicked() {
+                        let base = "新分组";
+                        let mut name = base.to_string();
+                        let mut idx = 1;
+                        while self.flash_memory.groups.contains_key(&name) {
+                            idx += 1;
+                            name = format!("{}{}", base, idx);
                         }
+                        self.flash_memory.create_group_if_absent(&name);
+                        self.current_group = Some(name.clone());
+                        self.renaming_group_active = true;
+                        self.renaming_input = name;
+                        self.show_message("已创建新分组，可直接重命名");
                     }
                 } else {
-                    ui.label("暂无分组");
+                    // 正常状态显示"目录"
+                    ui.painter().text(
+                        resp.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "目录",
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::BLACK,
+                    );
                 }
             });
-
             ui.separator();
 
-            // 操作按钮
-            ui.horizontal(|ui| {
-                if ui.button("添加单词").clicked() {
-                    self.show_add_word_dialog = true;
-                }
-                
-                if ui.button("开始闪记").clicked() {
-                    if let Some(group) = &self.current_group {
-                        if let Some(words) = self.flash_memory.get_words_in_group(group) {
-                            if !words.is_empty() {
-                                self.is_flashing = true;
-                                self.current_word_index = 0;
-                                self.show_meaning = false;
-                            } else {
-                                self.show_message("该分组没有单词");
+            // 分组列表（垂直）
+            let mut groups: Vec<String> = self.flash_memory.get_groups().into_iter().map(|s| s.to_string()).collect();
+            groups.sort();
+            for g in groups {
+                let selected = self.current_group.as_ref() == Some(&g);
+                // 当前选中且处于重命名状态：显示输入框
+                if selected && self.renaming_group_active {
+                    let resp = ui.text_edit_singleline(&mut self.renaming_input);
+                    // 按 Enter 确认重命名
+                    let confirm = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    // 按 Escape 取消重命名
+                    let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    // 失去焦点时自动确认重命名（相当于按Enter）
+                    let lost_focus = resp.lost_focus();
+                    
+                    if confirm || lost_focus {
+                        let new_name = self.renaming_input.trim();
+                        if new_name.is_empty() {
+                            self.show_message("分组名不能为空");
+                            self.renaming_group_active = false;
+                        } else {
+                            let old = g.clone();
+                            match self.flash_memory.rename_group(&old, new_name) {
+                                Ok(_) => {
+                                    self.current_group = Some(new_name.to_string());
+                                    self.renaming_group_active = false;
+                                    self.show_message("分组已重命名");
+                                }
+                                Err(e) => {
+                                    self.show_message(e);
+                                    self.renaming_group_active = false;
+                                }
                             }
                         }
-                    } else {
-                        self.show_message("请先选择分组");
+                    } else if cancel {
+                        self.renaming_group_active = false;
+                    }
+                    
+                    // 请求焦点以确保输入框保持活跃状态
+                    resp.request_focus();
+                } else {
+                    let resp = ui.selectable_label(selected, g.clone());
+                    // 双击重命名分组（优先处理双击）
+                    if resp.double_clicked() {
+                        self.current_group = Some(g.clone());
+                        self.renaming_group_active = true;
+                        self.renaming_input = g.clone();
+                    } else if resp.clicked() {
+                        // 点击当前分组时收起，点击其他分组时展开
+                        if self.current_group.as_ref() == Some(&g) {
+                            // 如果点击的是当前分组，则收起
+                            self.current_group = None;
+                            self.current_word_table = None;
+                        } else {
+                            // 如果点击的是其他分组，则展开
+                            self.current_group = Some(g.clone());
+                            self.current_word_table = None; // 清除单词表选择
+                        }
+                    }
+                    // 右键菜单
+                    if resp.secondary_clicked() {
+                        self.context_menu_group = Some(g.clone());
+                        self.show_context_menu = true;
+                        self.context_menu_pos = resp.interact_pointer_pos().unwrap_or_default();
                     }
                 }
                 
-                if ui.button("保存数据").clicked() {
-                    match self.flash_memory.save_to_file("words.json") {
-                        Ok(_) => self.show_message("数据已保存到 words.json"),
-                        Err(e) => self.show_message(&format!("保存失败: {}", e)),
-                    }
-                }
-            });
-
-            ui.separator();
-
-            // 显示当前分组的单词
-            if let Some(ref group) = self.current_group {
-                if let Some(words) = self.flash_memory.get_words_in_group(group) {
-                    ui.label(format!("分组 '{}' 中的单词:", group));
-                    ui.separator();
-
-                    // 添加表头
-                    ui.horizontal(|ui| {
-                        ui.label("英文单词");
-                        ui.separator();
-                        ui.label("中文意思");
-                    });
-                    ui.separator();
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (i, word) in words.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                // 英文单词列
-                                let english_response = ui.allocate_response(
-                                    egui::Vec2::new(200.0, 25.0),
-                                    egui::Sense::hover()
-                                );
-                                
-                                // 中文意思列
-                                let chinese_response = ui.allocate_response(
-                                    egui::Vec2::new(200.0, 25.0),
-                                    egui::Sense::hover()
-                                );
-
-                                // 检查鼠标悬停
-                                let is_hovered = english_response.hovered() || chinese_response.hovered();
-                                if is_hovered {
-                                    self.hovered_word = Some(i);
-                                } else if self.hovered_word == Some(i) {
-                                    self.hovered_word = None;
-                                }
-
-                                // 绘制英文单词
-                                let english_rect = english_response.rect;
-                                let painter = ui.painter();
-                                
-                                if is_hovered {
-                                    painter.rect_filled(english_rect, 3.0, egui::Color32::from_rgb(230, 250, 230));
-                                }
-
-                                painter.text(
-                                    english_rect.left_center() + egui::Vec2::new(5.0, 0.0),
-                                    egui::Align2::LEFT_CENTER,
-                                    &word.english,
-                                    egui::FontId::proportional(16.0),
-                                    if is_hovered { egui::Color32::DARK_GREEN } else { egui::Color32::BLACK },
-                                );
-
-                                // 绘制中文意思
-                                let chinese_rect = chinese_response.rect;
-                                
-                                if is_hovered {
-                                    painter.rect_filled(chinese_rect, 3.0, egui::Color32::from_rgb(230, 250, 230));
-                                }
-
-                                painter.text(
-                                    chinese_rect.left_center() + egui::Vec2::new(5.0, 0.0),
-                                    egui::Align2::LEFT_CENTER,
-                                    &word.chinese,
-                                    egui::FontId::proportional(16.0),
-                                    if is_hovered { egui::Color32::DARK_GREEN } else { egui::Color32::BLACK },
-                                );
-                            });
-                            
-                            ui.allocate_space(egui::Vec2::new(0.0, 2.0));
-                        }
-                    });
-                }
-            } else if groups_clone.is_empty() {
-                ui.label("暂无分组，请先添加单词");
-            } else {
-                ui.label("请选择一个分组查看单词");
+                // 显示该分组下的单词表
+                 if selected {
+                     let tables: Vec<WordTable> = self.flash_memory.get_word_tables_in_group(&g)
+                         .map(|t| t.clone())
+                         .unwrap_or_default();
+                     for table in tables {
+                         ui.add_space(2.0);
+                         ui.horizontal(|ui| {
+                             ui.add_space(20.0); // 缩进
+                             let table_selected = self.current_word_table.as_ref() == Some(&table.name);
+                             
+                             // 单词表重命名状态
+                             if table_selected && self.renaming_word_table_active {
+                                 let resp = ui.text_edit_singleline(&mut self.renaming_word_table_input);
+                                 
+                                 // 按 Enter 确认重命名
+                                 let confirm = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                 // 按 Escape 取消重命名
+                                 let cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                 // 失去焦点时自动确认重命名（相当于按Enter）
+                                 let lost_focus = resp.lost_focus();
+                                 
+                                 if confirm || lost_focus {
+                                     let new_name = self.renaming_word_table_input.trim();
+                                     if new_name.is_empty() {
+                                         self.show_message("单词表名不能为空");
+                                         self.renaming_word_table_active = false;
+                                     } else {
+                                         match self.flash_memory.rename_word_table(&g, &table.name, new_name) {
+                                             Ok(_) => {
+                                                 self.current_word_table = Some(new_name.to_string());
+                                                 self.renaming_word_table_active = false;
+                                                 self.show_message("单词表已重命名");
+                                             }
+                                             Err(e) => {
+                                                 self.show_message(e);
+                                                 self.renaming_word_table_active = false;
+                                             }
+                                         }
+                                     }
+                                 } else if cancel {
+                                     self.renaming_word_table_active = false;
+                                 }
+                                 
+                                 // 请求焦点以确保输入框保持活跃状态
+                                 resp.request_focus();
+                             } else {
+                                 let resp = ui.selectable_label(table_selected, &table.name);
+                                 // 双击重命名（优先处理双击）
+                                 if resp.double_clicked() {
+                                     self.current_word_table = Some(table.name.clone());
+                                     self.renaming_word_table_active = true;
+                                     self.renaming_word_table_input = table.name.clone();
+                                     // 请求焦点到输入框
+                                     ui.memory_mut(|mem| mem.request_focus(egui::Id::new("word_table_rename")));
+                                 } else if resp.clicked() {
+                                     // 只有在非双击时才处理单击
+                                     self.current_word_table = Some(table.name.clone());
+                                 }
+                                 // 右键菜单
+                                 if resp.secondary_clicked() {
+                                     self.context_menu_word_table = Some((g.clone(), table.name.clone()));
+                                     self.show_word_table_context_menu = true;
+                                     self.word_table_context_menu_pos = resp.interact_pointer_pos().unwrap_or_default();
+                                 }
+                             }
+                         });
+                     }
+                 }
+                ui.add_space(4.0);
             }
         });
 
-        // 添加单词对话框
-        if self.show_add_word_dialog {
-            egui::Window::new("添加新单词")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.label("英文单词:");
-                    ui.text_edit_singleline(&mut self.new_english);
-                    
-                    ui.label("中文意思:");
-                    ui.text_edit_singleline(&mut self.new_chinese);
-                    
-                    ui.label("分组名称:");
-                    ui.text_edit_singleline(&mut self.new_group);
-                    
-                    ui.separator();
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("添加").clicked() {
-                            if !self.new_english.trim().is_empty() 
-                                && !self.new_chinese.trim().is_empty() 
-                                && !self.new_group.trim().is_empty() {
-                                
-                                let word = Word {
-                                    english: self.new_english.trim().to_string(),
-                                    chinese: self.new_chinese.trim().to_string(),
-                                    group: self.new_group.trim().to_string(),
-                                };
-                                
-                                self.flash_memory.add_word(word);
-                                self.current_group = Some(self.new_group.trim().to_string());
-                                
-                                // 清空输入框
-                                self.new_english.clear();
-                                self.new_chinese.clear();
-                                self.new_group.clear();
-                                
-                                self.show_add_word_dialog = false;
-                                self.show_message("单词添加成功！");
-                            } else {
-                                self.show_message("请填写完整信息！");
+        // 右键上下文菜单
+         if self.show_context_menu {
+             egui::Area::new("context_menu".into())
+                 .fixed_pos(self.context_menu_pos)
+                 .order(egui::Order::Foreground)
+                 .show(ctx, |ui| {
+                    egui::Frame::popup(&ctx.style()).show(ui, |ui| {
+                        ui.set_min_width(120.0);
+                        if ui.button("新建单词表").clicked() {
+                            if let Some(ref group) = self.context_menu_group {
+                                self.flash_memory.create_word_table(group, "新单词表");
+                                // 直接进入重命名状态
+                                self.current_group = Some(group.clone());
+                                self.current_word_table = Some("新单词表".to_string());
+                                self.renaming_word_table_active = true;
+                                self.renaming_word_table_input = "新单词表".to_string();
+                                self.show_message("已创建新单词表，可直接重命名");
                             }
+                            self.show_context_menu = false;
                         }
-                        
-                        if ui.button("取消").clicked() {
-                            self.show_add_word_dialog = false;
-                            self.new_english.clear();
-                            self.new_chinese.clear();
-                            self.new_group.clear();
+                        if ui.button("删除分组").clicked() {
+                            if let Some(ref group) = self.context_menu_group {
+                                match self.flash_memory.delete_group(group) {
+                                    Ok(_) => {
+                                        if self.current_group.as_ref() == Some(group) {
+                                            self.current_group = None;
+                                            self.current_word_table = None;
+                                        }
+                                        self.show_message("分组已删除");
+                                    }
+                                    Err(e) => {
+                                        self.show_message(e);
+                                    }
+                                }
+                            }
+                            self.show_context_menu = false;
                         }
                     });
                 });
         }
+
+        // 单词表右键菜单
+        if self.show_word_table_context_menu {
+            egui::Area::new("word_table_context_menu".into())
+                .fixed_pos(self.word_table_context_menu_pos)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                   egui::Frame::popup(&ctx.style()).show(ui, |ui| {
+                       ui.set_min_width(120.0);
+                       if ui.button("修改").clicked() {
+                           if let Some((group, table_name)) = &self.context_menu_word_table {
+                               self.editing_word_table = Some((group.clone(), table_name.clone()));
+                               // 清空输入框内容
+                               self.word_table_content = String::new();
+                           }
+                           self.show_word_table_context_menu = false;
+                       }
+                       if ui.button("删除").clicked() {
+                           if let Some((group, table_name)) = &self.context_menu_word_table {
+                               match self.flash_memory.delete_word_table(group, table_name) {
+                                   Ok(_) => {
+                                       // 如果删除的是当前选中的单词表，清除选择
+                                       if self.current_word_table.as_ref() == Some(table_name) {
+                                           self.current_word_table = None;
+                                       }
+                                       self.show_message("单词表已删除");
+                                   }
+                                   Err(e) => {
+                                       self.show_message(e);
+                                   }
+                               }
+                           }
+                           self.show_word_table_context_menu = false;
+                       }
+                   });
+               });
+        }
+
+        // 点击其他地方关闭单词表右键菜单
+        if self.show_word_table_context_menu {
+            if ctx.input(|i| i.pointer.primary_clicked()) {
+                // 检查是否点击在菜单区域外
+                let menu_rect = egui::Rect::from_min_size(
+                    self.word_table_context_menu_pos,
+                    egui::Vec2::new(120.0, 60.0)
+                );
+                if let Some(pointer_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    if !menu_rect.contains(pointer_pos) {
+                        self.show_word_table_context_menu = false;
+                    }
+                }
+            }
+        }
+
+        // 点击其他地方关闭右键菜单
+        if self.show_context_menu {
+            if ctx.input(|i| i.pointer.primary_clicked()) {
+                // 检查是否点击在菜单区域外
+                let menu_rect = egui::Rect::from_min_size(
+                    self.context_menu_pos,
+                    egui::Vec2::new(120.0, 60.0)
+                );
+                if let Some(pointer_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    if !menu_rect.contains(pointer_pos) {
+                        self.show_context_menu = false;
+                    }
+                }
+            }
+        }
+        // 右侧内容区 - 移除所有旧功能，只保留基本布局
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // 背景色轻微绿色
+            let rect = ui.max_rect();
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(223, 238, 223));
+
+            // 检查是否在编辑单词表
+            if let Some((group, table_name)) = &self.editing_word_table.clone() {
+                // 单词表编辑界面
+                ui.vertical(|ui| {
+                    ui.add_space(10.0);
+                    
+                    // 按钮区域移到上方
+                    ui.horizontal(|ui| {
+                        if ui.button("返回").clicked() {
+                            self.editing_word_table = None;
+                            self.word_table_content.clear();
+                        }
+                        
+                        ui.add_space(20.0);
+                        
+                        if ui.button("保存").clicked() {
+                            // TODO: 实现保存功能
+                            self.show_message("保存功能待实现");
+                            self.editing_word_table = None;
+                            self.word_table_content.clear();
+                        }
+                    });
+                    
+                    ui.add_space(10.0);
+                    
+                    // 调小字体的说明文字
+                    ui.small("单词和释义之间用空格分隔，换行添加新单词:");
+                    ui.add_space(5.0);
+                    
+                    let available_height = ui.available_height() - 20.0; // 调整高度计算
+                    ui.add_sized(
+                        [ui.available_width(), available_height],
+                        egui::TextEdit::multiline(&mut self.word_table_content)
+                            .font(egui::TextStyle::Monospace)
+                    );
+                });
+            } else {
+                // 默认内容区
+                ui.vertical_centered(|ui| {
+                    ui.add_space(50.0);
+                    ui.heading("内容区域");
+                    ui.add_space(20.0);
+                    
+                    if !self.message.is_empty() {
+                        ui.colored_label(egui::Color32::DARK_GREEN, &self.message);
+                    }
+                    
+                    ui.add_space(20.0);
+                    if let Some(ref group) = self.current_group {
+                        ui.label(format!("当前选中分组: {}", group));
+                    } else {
+                        ui.label("请选择左侧分组");
+                    }
+                });
+            }
+        });
     }
 }
 
@@ -328,11 +577,10 @@ impl FlashMemoryApp {
     }
 }
 
-// 在 Windows 上尝试加载系统中文字体（simhei/simkai），用于支持中文显示
+// 尝试加载系统中文字体（simhei/simkai），用于支持中文显示
 fn configure_chinese_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut loaded = false;
-
     for path in [
         "C\\Windows\\Fonts\\simhei.ttf",
         "C\\Windows\\Fonts\\simkai.ttf",
@@ -341,44 +589,23 @@ fn configure_chinese_fonts(ctx: &egui::Context) {
     ] {
         if let Ok(bytes) = std::fs::read(path) {
             fonts.font_data.insert("cjk".to_owned(), egui::FontData::from_owned(bytes));
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .insert(0, "cjk".to_owned());
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .insert(0, "cjk".to_owned());
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "cjk".to_owned());
+            fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "cjk".to_owned());
             loaded = true;
             break;
         }
     }
-
-    // 如果未加载到中文字体，仍沿用默认字体设置
-    if loaded {
-        ctx.set_fonts(fonts);
-    } else {
-        ctx.set_fonts(fonts);
-    }
+    if loaded { ctx.set_fonts(fonts); } else { ctx.set_fonts(fonts); }
 }
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 600.0])
-            .with_title("单词闪记系统"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 620.0]).with_title("单词闪记系统"),
         ..Default::default()
     };
-    
     eframe::run_native(
         "单词闪记系统",
         options,
-        Box::new(|cc| {
-            // 应用自定义中文字体以避免中文显示为方块
-            configure_chinese_fonts(&cc.egui_ctx);
-            Ok(Box::new(FlashMemoryApp::default()))
-        }),
+        Box::new(|cc| { configure_chinese_fonts(&cc.egui_ctx); Ok(Box::new(FlashMemoryApp::default())) }),
     )
 }
