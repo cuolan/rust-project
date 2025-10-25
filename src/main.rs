@@ -242,6 +242,7 @@ impl eframe::App for FlashMemoryApp {
                         self.renaming_group_active = true;
                         self.renaming_input = name;
                         self.show_message("已创建新分组，可直接重命名");
+                        self.auto_save(); // 自动保存
                     }
                 } else {
                     // 正常状态显示"目录"
@@ -283,6 +284,7 @@ impl eframe::App for FlashMemoryApp {
                                     self.current_group = Some(new_name.to_string());
                                     self.renaming_group_active = false;
                                     self.show_message("分组已重命名");
+                                    self.auto_save(); // 自动保存
                                 }
                                 Err(e) => {
                                     self.show_message(e);
@@ -356,6 +358,7 @@ impl eframe::App for FlashMemoryApp {
                                                  self.current_word_table = Some(new_name.to_string());
                                                  self.renaming_word_table_active = false;
                                                  self.show_message("单词表已重命名");
+                                                 self.auto_save(); // 自动保存
                                              }
                                              Err(e) => {
                                                  self.show_message(e);
@@ -413,6 +416,7 @@ impl eframe::App for FlashMemoryApp {
                                 self.renaming_word_table_active = true;
                                 self.renaming_word_table_input = "新单词表".to_string();
                                 self.show_message("已创建新单词表，可直接重命名");
+                                self.auto_save(); // 自动保存
                             }
                             self.show_context_menu = false;
                         }
@@ -425,6 +429,7 @@ impl eframe::App for FlashMemoryApp {
                                             self.current_word_table = None;
                                         }
                                         self.show_message("分组已删除");
+                                        self.auto_save(); // 自动保存
                                     }
                                     Err(e) => {
                                         self.show_message(e);
@@ -462,6 +467,7 @@ impl eframe::App for FlashMemoryApp {
                                            self.current_word_table = None;
                                        }
                                        self.show_message("单词表已删除");
+                                       self.auto_save(); // 自动保存
                                    }
                                    Err(e) => {
                                        self.show_message(e);
@@ -574,6 +580,17 @@ impl FlashMemoryApp {
     fn show_message(&mut self, message: &str) {
         self.message = message.to_string();
         self.message_timer = 3.0; // 显示3秒
+    }
+    
+    fn auto_save(&mut self) {
+        match self.flash_memory.save_to_file("words.json") {
+            Ok(_) => {
+                // 保存成功，不显示消息以避免干扰用户
+            }
+            Err(e) => {
+                self.show_message(&format!("保存失败: {}", e));
+            }
+        }
     }
 }
 

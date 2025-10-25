@@ -1,0 +1,9 @@
+C:\Users\cuolan\Desktop\FlashMemory\target\debug\deps\webbrowser-5607ec8f4302ad39.d: C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\lib.rs C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\windows.rs C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\common.rs
+
+C:\Users\cuolan\Desktop\FlashMemory\target\debug\deps\libwebbrowser-5607ec8f4302ad39.rmeta: C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\lib.rs C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\windows.rs C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\common.rs
+
+C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\lib.rs:
+C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\windows.rs:
+C:\Users\cuolan\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\webbrowser-1.0.6\src\common.rs:
+
+# env-dep:WEBBROWSER_WASM_TARGET
