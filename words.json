@@ -1,5 +1,37 @@
 {
   "groups": {
+    "新分组": [
+      {
+        "name": "新单词表",
+        "words": [
+          {
+            "english": "asdf",
+            "chinese": "啊啊啊",
+            "group": "新分组"
+          },
+          {
+            "english": "asdf",
+            "chinese": "啊啊啊1",
+            "group": "新分组"
+          },
+          {
+            "english": "asdf",
+            "chinese": "啊啊啊2",
+            "group": "新分组"
+          },
+          {
+            "english": "asdf",
+            "chinese": "啊啊啊3",
+            "group": "新分组"
+          },
+          {
+            "english": "asdf",
+            "chinese": "啊啊啊4",
+            "group": "新分组"
+          }
+        ]
+      }
+    ],
     "新分组2": [
       {
         "name": "新单词表",
@@ -33,6 +65,16 @@
             "english": "yyrre",
             "chinese": "匹配",
             "group": "新分组2"
+          },
+          {
+            "english": "djnjdcd",
+            "chinese": "啊啊",
+            "group": "新分组2"
+          },
+          {
+            "english": "asd",
+            "chinese": "携程",
+            "group": "新分组2"
           }
         ]
       },
@@ -40,7 +82,6 @@
         "name": "新单词表2",
         "words": []
       }
-    ],
-    "新分组": []
+    ]
   }
 }

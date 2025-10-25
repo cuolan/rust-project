@@ -185,6 +185,9 @@ struct FlashMemoryApp {
 
     // 真实时间计时
     last_tick: std::time::Instant,
+    // 随机顺序开关与当前轮次词序
+    random_order: bool,
+    flash_words: Vec<Word>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +234,8 @@ impl Default for FlashMemoryApp {
             countdown_remaining: 0,
             countdown_timer: 0.0,
             last_tick: std::time::Instant::now(),
+            random_order: false,
+            flash_words: Vec::new(),
         }
     }
 }
@@ -660,10 +665,18 @@ impl eframe::App for FlashMemoryApp {
                             egui::Button::new("开始")
                         );
                         if start_button.clicked() {
-                            let total = self.get_current_words().len();
+                            let mut words = self.get_current_words();
+                            let total = words.len();
                             if total == 0 {
                                 self.show_message("当前单词表为空，无法开始");
                             } else {
+                                // 根据随机开关准备本轮词序
+                                if self.random_order {
+                                    use rand::seq::SliceRandom;
+                                    let mut rng = rand::thread_rng();
+                                    words.shuffle(&mut rng);
+                                }
+                                self.flash_words = words;
                                 self.flash_mode = FlashMode::Started;
                                 self.flash_index = 0;
                                 self.flash_timer = 0.0;
@@ -712,7 +725,11 @@ impl eframe::App for FlashMemoryApp {
                             self.countdown_remaining = 0;
                             self.countdown_timer = 0.0;
                             self.last_tick = std::time::Instant::now();
+                            self.flash_words.clear();
                         }
+                        
+                        ui.add_space(10.0);
+                        ui.toggle_value(&mut self.random_order, "随机");
                         
 
                     });
@@ -722,7 +739,14 @@ impl eframe::App for FlashMemoryApp {
                     
                     // 单词显示区域
                     if let Some(ref table_name) = self.current_word_table {
-                        let all_words = self.get_current_words();
+                        // 预览保持原序；闪记阶段使用开始时的词序
+                        let all_words = if self.flash_mode == FlashMode::Preview {
+                            self.get_current_words()
+                        } else if !self.flash_words.is_empty() {
+                            self.flash_words.clone()
+                        } else {
+                            self.get_current_words()
+                        };
                         if all_words.is_empty() {
                             ui.vertical_centered(|ui| {
                                 ui.add_space(50.0);
