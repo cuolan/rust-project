@@ -106,6 +106,20 @@ impl FlashMemory {
         // 保持向后兼容，暂时返回None
         None
     }
+    
+    fn add_words_to_table(&mut self, group: &str, table_name: &str, words: Vec<Word>) -> Result<(), &'static str> {
+        if let Some(tables) = self.groups.get_mut(group) {
+            if let Some(table) = tables.iter_mut().find(|t| t.name == table_name) {
+                // 修改逻辑：覆盖原有内容，而非追加
+                table.words = words;
+                Ok(())
+            } else {
+                Err("单词表不存在")
+            }
+        } else {
+            Err("分组不存在")
+        }
+    }
 
     fn save_to_file(&self, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
         let json = serde_json::to_string_pretty(self)?;
@@ -157,6 +171,18 @@ struct FlashMemoryApp {
     // 新建单词表相关
     creating_new_word_table: Option<String>, // 正在为哪个分组创建新单词表
     new_word_table_name: String, // 新单词表名称输入框
+    
+    // 闪记系统相关
+    flash_mode: FlashMode, // 闪记模式状态
+    current_page: usize, // 当前页码
+    words_per_page: usize, // 每页显示的单词数量
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum FlashMode {
+    Preview,  // 预览模式
+    Started,  // 开始闪记
+    Paused,   // 暂停
 }
 
 impl Default for FlashMemoryApp {
@@ -186,6 +212,10 @@ impl Default for FlashMemoryApp {
             
             creating_new_word_table: None,
             new_word_table_name: String::new(),
+            
+            flash_mode: FlashMode::Preview,
+            current_page: 0,
+            words_per_page: 20, // 两列每列10个单词
         }
     }
 }
@@ -452,9 +482,26 @@ impl eframe::App for FlashMemoryApp {
                        ui.set_min_width(120.0);
                        if ui.button("修改").clicked() {
                            if let Some((group, table_name)) = &self.context_menu_word_table {
+                               // 同步当前选择到该表，确保保存返回后预览显示
+                               self.current_group = Some(group.clone());
+                               self.current_word_table = Some(table_name.clone());
+                               self.current_page = 0; // 进入修改时预览回到第一页
                                self.editing_word_table = Some((group.clone(), table_name.clone()));
-                               // 清空输入框内容
-                               self.word_table_content = String::new();
+                               // 预填原有单词到编辑框（格式：英文 空格 中文）
+                               if let Some(tables) = self.flash_memory.get_word_tables_in_group(group) {
+                                   if let Some(table) = tables.iter().find(|t| t.name == *table_name) {
+                                       self.word_table_content = table.words
+                                           .iter()
+                                           .take(100) // 预填最多100行
+                                           .map(|w| format!("{} {}", w.english, w.chinese))
+                                           .collect::<Vec<_>>()
+                                           .join("\n");
+                                   } else {
+                                       self.word_table_content.clear();
+                                   }
+                               } else {
+                                   self.word_table_content.clear();
+                               }
                            }
                            self.show_word_table_context_menu = false;
                        }
@@ -519,8 +566,8 @@ impl eframe::App for FlashMemoryApp {
 
             // 检查是否在编辑单词表
             if let Some((group, table_name)) = &self.editing_word_table.clone() {
-                // 单词表编辑界面
-                ui.vertical(|ui| {
+                // 单词表编辑界面（整体可滚动，输入框保持充满内容区域）
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.add_space(10.0);
                     
                     // 按钮区域移到上方
@@ -533,42 +580,169 @@ impl eframe::App for FlashMemoryApp {
                         ui.add_space(20.0);
                         
                         if ui.button("保存").clicked() {
-                            // TODO: 实现保存功能
-                            self.show_message("保存功能待实现");
-                            self.editing_word_table = None;
-                            self.word_table_content.clear();
+                            if let Some((group, table_name)) = &self.editing_word_table.clone() {
+                                // 最多处理前100行
+                                let total_lines = self.word_table_content.lines().count();
+                                let limited_text = self.word_table_content
+                                    .lines()
+                                    .take(100)
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                let words = self.parse_words_from_text(&limited_text, group);
+                                
+                                if total_lines > 100 {
+                                    self.show_message("超过100行，仅保存前100行");
+                                }
+                                
+                                if words.is_empty() {
+                                    self.show_message("没有找到有效的单词格式");
+                                } else {
+                                    match self.flash_memory.add_words_to_table(group, table_name, words.clone()) {
+                                        Ok(_) => {
+                                            self.auto_save();
+                                            self.show_message(&format!("成功保存 {} 个单词", words.len()));
+                                            // 保持当前选择为刚编辑的分组和表，回到预览直接显示
+                                            self.current_group = Some(group.clone());
+                                            self.current_word_table = Some(table_name.clone());
+                                            self.current_page = 0; // 保存后预览回到第一页，保证可见
+                                            self.editing_word_table = None;
+                                            self.word_table_content.clear();
+                                        }
+                                        Err(e) => {
+                                            self.show_message(&format!("保存失败: {}", e));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     });
                     
                     ui.add_space(10.0);
                     
-                    // 调小字体的说明文字
-                    ui.small("单词和释义之间用空格分隔，换行添加新单词:");
+                    // 说明文字
+                    ui.small("单词和释义之间用空格分隔，换行添加新单词（最多保存前100行）:");
                     ui.add_space(5.0);
                     
-                    let available_height = ui.available_height() - 20.0; // 调整高度计算
+                    // 编辑框高度：固定为剩余可用空间，TextEdit 自带滚动
+                    let edit_height = ui.available_height().max(200.0);
                     ui.add_sized(
-                        [ui.available_width(), available_height],
+                        [ui.available_width(), edit_height],
                         egui::TextEdit::multiline(&mut self.word_table_content)
                             .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
                     );
                 });
             } else {
-                // 默认内容区
-                ui.vertical_centered(|ui| {
-                    ui.add_space(50.0);
-                    ui.heading("内容区域");
-                    ui.add_space(20.0);
+                // 闪记系统内容区
+                ui.vertical(|ui| {
+                    // 控制按钮区域
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        
+                        // 开始按钮
+                        let start_button = ui.add_enabled(
+                            self.flash_mode == FlashMode::Preview || self.flash_mode == FlashMode::Paused,
+                            egui::Button::new("开始")
+                        );
+                        if start_button.clicked() {
+                            self.flash_mode = FlashMode::Started;
+                        }
+                        
+                        ui.add_space(10.0);
+                        
+                        // 暂停按钮
+                        let pause_button = ui.add_enabled(
+                            self.flash_mode == FlashMode::Started,
+                            egui::Button::new("暂停")
+                        );
+                        if pause_button.clicked() {
+                            self.flash_mode = FlashMode::Paused;
+                        }
+                        
+                        ui.add_space(10.0);
+                        
+                        // 结束按钮
+                        let end_button = ui.add_enabled(
+                            self.flash_mode != FlashMode::Preview,
+                            egui::Button::new("结束")
+                        );
+                        if end_button.clicked() {
+                            self.flash_mode = FlashMode::Preview;
+                            self.current_page = 0;
+                        }
+                        
+
+                    });
                     
-                    if !self.message.is_empty() {
-                        ui.colored_label(egui::Color32::DARK_GREEN, &self.message);
-                    }
+                    ui.separator();
+                    ui.add_space(10.0);
                     
-                    ui.add_space(20.0);
-                    if let Some(ref group) = self.current_group {
-                        ui.label(format!("当前选中分组: {}", group));
+                    // 单词显示区域
+                    if let Some(ref table_name) = self.current_word_table {
+                        // 预览模式显示全部单词，非预览模式按页显示
+                        let words = match self.flash_mode {
+                            FlashMode::Preview => self.get_current_words(),
+                            _ => self.get_current_page_words(),
+                        };
+                        
+                        if !words.is_empty() {
+                            // 用表格展示：两列（英文、中文）铺满内容区
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                egui_extras::TableBuilder::new(ui)
+                                    .striped(true)
+                                    .resizable(false)
+                                    .column(egui_extras::Column::remainder())
+                                    .column(egui_extras::Column::remainder())
+                                    .body(|mut body| {
+                                        let font_size: f32 = 18.0; // 放大字体
+                                        let row_height: f32 = (font_size + 14.0_f32).max(32.0_f32); // 行高更充足，便于垂直居中
+                                        let row_count = words.len();
+                                        body.rows(row_height, row_count, |mut row| {
+                                            let idx = row.index();
+                                            if let Some(word) = words.get(idx) {
+                                                row.col(|ui| {
+                                                    // 垂直居中，左对齐显示英文
+                                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                                        ui.label(egui::RichText::new(&word.english).size(font_size).strong());
+                                                    });
+                                                });
+                                                row.col(|ui| {
+                                                    // 垂直居中，左对齐显示中文释义
+                                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                                        ui.label(egui::RichText::new(&word.chinese).size(font_size));
+                                                    });
+                                                });
+                                            }
+                                        });
+                                    });
+                            });
+                        } else {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(50.0);
+                                ui.label("该单词表为空");
+                                ui.add_space(20.0);
+                                ui.label("请添加单词到此表中");
+                            });
+                        }
                     } else {
-                        ui.label("请选择左侧分组");
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(50.0);
+                            ui.heading("闪记系统");
+                            ui.add_space(20.0);
+                            
+                            if !self.message.is_empty() {
+                                ui.colored_label(egui::Color32::DARK_GREEN, &self.message);
+                                ui.add_space(20.0);
+                            }
+                            
+                            if let Some(ref group) = self.current_group {
+                                ui.label(format!("当前分组: {}", group));
+                                ui.add_space(10.0);
+                                ui.label("请选择左侧单词表开始学习");
+                            } else {
+                                ui.label("请选择左侧分组和单词表");
+                            }
+                        });
                     }
                 });
             }
@@ -591,6 +765,64 @@ impl FlashMemoryApp {
                 self.show_message(&format!("保存失败: {}", e));
             }
         }
+    }
+    
+    fn get_current_words(&self) -> Vec<Word> {
+        if let (Some(group), Some(table_name)) = (&self.current_group, &self.current_word_table) {
+            if let Some(tables) = self.flash_memory.get_word_tables_in_group(group) {
+                if let Some(table) = tables.iter().find(|t| t.name == *table_name) {
+                    return table.words.clone();
+                }
+            }
+        }
+        Vec::new()
+    }
+    
+    fn get_total_pages(&self) -> usize {
+        let words = self.get_current_words();
+        if words.is_empty() {
+            0
+        } else {
+            (words.len() + self.words_per_page - 1) / self.words_per_page
+        }
+    }
+    
+    fn get_current_page_words(&self) -> Vec<Word> {
+        let words = self.get_current_words();
+        let start = self.current_page * self.words_per_page;
+        let end = std::cmp::min(start + self.words_per_page, words.len());
+        if start < words.len() {
+            words[start..end].to_vec()
+        } else {
+            Vec::new()
+        }
+    }
+    
+    fn parse_words_from_text(&self, text: &str, group: &str) -> Vec<Word> {
+        let mut words = Vec::new();
+        
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            
+            // 查找第一个空格的位置
+            if let Some(space_pos) = line.find(' ') {
+                let english = line[..space_pos].trim().to_string();
+                let chinese = line[space_pos + 1..].trim().to_string();
+                
+                if !english.is_empty() && !chinese.is_empty() {
+                    words.push(Word {
+                        english,
+                        chinese,
+                        group: group.to_string(),
+                    });
+                }
+            }
+        }
+        
+        words
     }
 }
 
