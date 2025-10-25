@@ -186,6 +186,7 @@ struct FlashMemoryApp {
     // 真实时间计时
     last_tick: std::time::Instant,
     // 随机顺序开关与当前轮次词序
+    background_color: egui::Color32,
     random_order: bool,
     flash_words: Vec<Word>,
 }
@@ -234,6 +235,7 @@ impl Default for FlashMemoryApp {
             countdown_remaining: 0,
             countdown_timer: 0.0,
             last_tick: std::time::Instant::now(),
+            background_color: egui::Color32::from_rgb(223, 238, 223),
             random_order: false,
             flash_words: Vec::new(),
         }
@@ -262,6 +264,9 @@ impl eframe::App for FlashMemoryApp {
             .default_width(self.sidebar_width)
             .resizable(true)
             .show(ctx, |ui| {
+            // 侧栏背景填充为当前主题色
+            let rect = ui.max_rect();
+            ui.painter().rect_filled(rect, 0.0, self.background_color);
             // 顶部"目录"标题 - 悬停时直接显示为加号
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -582,7 +587,7 @@ impl eframe::App for FlashMemoryApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             // 背景色轻微绿色
             let rect = ui.max_rect();
-            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(223, 238, 223));
+            ui.painter().rect_filled(rect, 0.0, self.background_color);
 
             // 检查是否在编辑单词表
             if let Some((group, table_name)) = &self.editing_word_table.clone() {
@@ -731,6 +736,26 @@ impl eframe::App for FlashMemoryApp {
                         ui.add_space(10.0);
                         ui.toggle_value(&mut self.random_order, "随机");
                         
+                        // 背景颜色选择方块（右侧）
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let size = egui::Vec2::new(18.0, 18.0);
+                            let colors = [
+                                egui::Color32::from_rgb(223, 238, 223), // 浅绿（当前默认）
+                                egui::Color32::from_rgb(255, 245, 204), // 浅黄
+                                egui::Color32::from_rgb(240, 240, 240), // 浅灰
+                            ];
+                            for &color in colors.iter() {
+                                let (rect, resp) = ui.allocate_at_least(size, egui::Sense::click());
+                                ui.painter().rect_filled(rect, 3.0, color);
+                                ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+                                if resp.clicked() {
+                                    self.background_color = color;
+                                    // 同步更新闪记卡片与中央背景
+                                    ctx.request_repaint();
+                                }
+                                ui.add_space(6.0);
+                            }
+                        });
 
                     });
                     
@@ -835,7 +860,7 @@ impl eframe::App for FlashMemoryApp {
                                     
                                     egui::Frame::none()
                                         .stroke(egui::Stroke::new(2.0, egui::Color32::BLACK))
-                                        .fill(egui::Color32::WHITE)
+                                        .fill(self.background_color)
                                         .show(ui, |ui| {
                                             ui.set_min_size(egui::Vec2::new(ui.available_width(), card_height));
                                             ui.add_space(top_space);
@@ -984,11 +1009,11 @@ fn configure_chinese_fonts(ctx: &egui::Context) {
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 620.0]).with_title("单词闪记系统"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 620.0]).with_title("单词闪记工具"),
         ..Default::default()
     };
     eframe::run_native(
-        "单词闪记系统",
+        "单词闪记工具",
         options,
         Box::new(|cc| { configure_chinese_fonts(&cc.egui_ctx); Ok(Box::new(FlashMemoryApp::default())) }),
     )
