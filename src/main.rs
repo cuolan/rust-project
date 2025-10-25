@@ -176,6 +176,15 @@ struct FlashMemoryApp {
     flash_mode: FlashMode, // 闪记模式状态
     current_page: usize, // 当前页码
     words_per_page: usize, // 每页显示的单词数量
+
+    // 闪记计时与索引
+    flash_index: usize,      // 当前显示的单词索引
+    flash_timer: f32,        // 用于2秒切换的计时器
+    countdown_remaining: i32, // 321倒计时剩余秒数（0表示结束）
+    countdown_timer: f32,     // 倒计时计时器
+
+    // 真实时间计时
+    last_tick: std::time::Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +225,12 @@ impl Default for FlashMemoryApp {
             flash_mode: FlashMode::Preview,
             current_page: 0,
             words_per_page: 20, // 两列每列10个单词
+
+            flash_index: 0,
+            flash_timer: 0.0,
+            countdown_remaining: 0,
+            countdown_timer: 0.0,
+            last_tick: std::time::Instant::now(),
         }
     }
 }
@@ -639,29 +654,52 @@ impl eframe::App for FlashMemoryApp {
                     ui.horizontal(|ui| {
                         ui.add_space(10.0);
                         
-                        // 开始按钮
+                        // 开始按钮：仅预览状态可点击
                         let start_button = ui.add_enabled(
-                            self.flash_mode == FlashMode::Preview || self.flash_mode == FlashMode::Paused,
+                            self.flash_mode == FlashMode::Preview,
                             egui::Button::new("开始")
                         );
                         if start_button.clicked() {
-                            self.flash_mode = FlashMode::Started;
+                            let total = self.get_current_words().len();
+                            if total == 0 {
+                                self.show_message("当前单词表为空，无法开始");
+                            } else {
+                                self.flash_mode = FlashMode::Started;
+                                self.flash_index = 0;
+                                self.flash_timer = 0.0;
+                                self.countdown_remaining = 3;
+                                self.countdown_timer = 0.0;
+                                self.last_tick = std::time::Instant::now();
+                                ctx.request_repaint();
+                            }
                         }
                         
                         ui.add_space(10.0);
                         
-                        // 暂停按钮
-                        let pause_button = ui.add_enabled(
-                            self.flash_mode == FlashMode::Started,
-                            egui::Button::new("暂停")
-                        );
+                        // 暂停/继续按钮：在开始与暂停状态均可点击
+                        let pause_label = if self.flash_mode == FlashMode::Paused { "继续" } else { "暂停" };
+                        let pause_enabled = self.flash_mode == FlashMode::Started || self.flash_mode == FlashMode::Paused;
+                        let pause_button = ui.add_enabled(pause_enabled, egui::Button::new(pause_label));
                         if pause_button.clicked() {
-                            self.flash_mode = FlashMode::Paused;
+                            match self.flash_mode {
+                                FlashMode::Started => {
+                                    self.flash_mode = FlashMode::Paused;
+                                    // 防止恢复时 dt 累计过大
+                                    self.last_tick = std::time::Instant::now();
+                                }
+                                FlashMode::Paused => {
+                                    self.flash_mode = FlashMode::Started;
+                                    self.last_tick = std::time::Instant::now();
+                                    // 恢复动画需要持续重绘
+                                    ctx.request_repaint();
+                                }
+                                _ => {}
+                            }
                         }
                         
                         ui.add_space(10.0);
                         
-                        // 结束按钮
+                        // 结束按钮：非预览状态可点击
                         let end_button = ui.add_enabled(
                             self.flash_mode != FlashMode::Preview,
                             egui::Button::new("结束")
@@ -669,6 +707,11 @@ impl eframe::App for FlashMemoryApp {
                         if end_button.clicked() {
                             self.flash_mode = FlashMode::Preview;
                             self.current_page = 0;
+                            self.flash_index = 0;
+                            self.flash_timer = 0.0;
+                            self.countdown_remaining = 0;
+                            self.countdown_timer = 0.0;
+                            self.last_tick = std::time::Instant::now();
                         }
                         
 
@@ -679,50 +722,118 @@ impl eframe::App for FlashMemoryApp {
                     
                     // 单词显示区域
                     if let Some(ref table_name) = self.current_word_table {
-                        // 预览模式显示全部单词，非预览模式按页显示
-                        let words = match self.flash_mode {
-                            FlashMode::Preview => self.get_current_words(),
-                            _ => self.get_current_page_words(),
-                        };
-                        
-                        if !words.is_empty() {
-                            // 用表格展示：两列（英文、中文）铺满内容区
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                egui_extras::TableBuilder::new(ui)
-                                    .striped(true)
-                                    .resizable(false)
-                                    .column(egui_extras::Column::remainder())
-                                    .column(egui_extras::Column::remainder())
-                                    .body(|mut body| {
-                                        let font_size: f32 = 18.0; // 放大字体
-                                        let row_height: f32 = (font_size + 14.0_f32).max(32.0_f32); // 行高更充足，便于垂直居中
-                                        let row_count = words.len();
-                                        body.rows(row_height, row_count, |mut row| {
-                                            let idx = row.index();
-                                            if let Some(word) = words.get(idx) {
-                                                row.col(|ui| {
-                                                    // 垂直居中，左对齐显示英文
-                                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                                        ui.label(egui::RichText::new(&word.english).size(font_size).strong());
-                                                    });
-                                                });
-                                                row.col(|ui| {
-                                                    // 垂直居中，左对齐显示中文释义
-                                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                                        ui.label(egui::RichText::new(&word.chinese).size(font_size));
-                                                    });
-                                                });
-                                            }
-                                        });
-                                    });
-                            });
-                        } else {
+                        let all_words = self.get_current_words();
+                        if all_words.is_empty() {
                             ui.vertical_centered(|ui| {
                                 ui.add_space(50.0);
                                 ui.label("该单词表为空");
                                 ui.add_space(20.0);
                                 ui.label("请添加单词到此表中");
                             });
+                        } else {
+                            match self.flash_mode {
+                                FlashMode::Preview => {
+                                    // 预览模式：展示全部单词表格
+                                    egui::ScrollArea::vertical().show(ui, |ui| {
+                                        egui_extras::TableBuilder::new(ui)
+                                            .striped(true)
+                                            .resizable(false)
+                                            .column(egui_extras::Column::remainder())
+                                            .column(egui_extras::Column::remainder())
+                                            .body(|mut body| {
+                                                let font_size: f32 = 18.0;
+                                                let row_height: f32 = (font_size + 14.0_f32).max(32.0_f32);
+                                                let row_count = all_words.len();
+                                                body.rows(row_height, row_count, |mut row| {
+                                                    let idx = row.index();
+                                                    if let Some(word) = all_words.get(idx) {
+                                                        row.col(|ui| {
+                                                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                                                ui.label(egui::RichText::new(&word.english).size(font_size).strong());
+                                                            });
+                                                        });
+                                                        row.col(|ui| {
+                                                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                                                ui.label(egui::RichText::new(&word.chinese).size(font_size));
+                                                            });
+                                                        });
+                                                    }
+                                                });
+                                            });
+                                    });
+                                }
+                                _ => {
+                                    // 闪记模式：321倒计时 -> 每1.5秒切换一个单词（前1秒只显示英文，后0.5秒显示中文；到末尾自动结束，不循环）
+                                    if self.flash_mode == FlashMode::Started {
+                                        // 使用系统时间推进动画，并请求持续重绘
+                                        let now = std::time::Instant::now();
+                                        let dt = (now - self.last_tick).as_secs_f32();
+                                        self.last_tick = now;
+                                        ctx.request_repaint();
+                                    
+                                        if self.countdown_remaining > 0 {
+                                            self.countdown_timer += dt;
+                                            if self.countdown_timer >= 1.0 {
+                                                self.countdown_remaining -= 1;
+                                                self.countdown_timer = 0.0;
+                                                // 倒计时刚结束时，确保词计时器从0开始，避免释义提前出现
+                                                if self.countdown_remaining == 0 {
+                                                    self.flash_timer = 0.0;
+                                                }
+                                            }
+                                        } else {
+                                            self.flash_timer += dt;
+                                            if self.flash_timer >= 2.0 {
+                                                self.flash_timer = 0.0;
+                                                if self.flash_index + 1 < all_words.len() {
+                                                    self.flash_index += 1;
+                                                } else {
+                                                    // 播放到最后一个词后自动结束（返回预览，不循环）
+                                                    self.flash_mode = FlashMode::Preview;
+                                                    self.current_page = 0;
+                                                    self.show_message("本轮学习结束");
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    let english_size: f32 = 64.0;
+                                    let chinese_size: f32 = 32.0;
+                                    let card_height = ui.available_height() - 20.0;
+                                    let show_meaning = self.countdown_remaining == 0 && self.flash_timer >= 1.0; // 前1秒只英文，后1秒显示中文
+                                    // 始终按“英文+预留释义”计算内容高度，避免释义出现导致整体向上/向下位移
+                                    let content_height = if self.countdown_remaining > 0 {
+                                        english_size + 20.0
+                                    } else {
+                                        english_size + chinese_size + 24.0
+                                    };
+                                    let top_space = (card_height - content_height).max(0.0) / 2.0;
+                                    
+                                    egui::Frame::none()
+                                        .stroke(egui::Stroke::new(2.0, egui::Color32::BLACK))
+                                        .fill(egui::Color32::WHITE)
+                                        .show(ui, |ui| {
+                                            ui.set_min_size(egui::Vec2::new(ui.available_width(), card_height));
+                                            ui.add_space(top_space);
+                                            ui.vertical_centered(|ui| {
+                                                if self.countdown_remaining > 0 {
+                                                    ui.label(egui::RichText::new(format!("{}", self.countdown_remaining)).size(english_size).strong());
+                                                } else {
+                                                    let word = &all_words[self.flash_index];
+                                                    ui.label(egui::RichText::new(&word.english).size(english_size).strong());
+                                                    // 始终预留英文到释义的间距与释义高度，避免出现瞬间位移
+                                                    ui.add_space(12.0);
+                                                    if show_meaning {
+                                                        ui.label(egui::RichText::new(&word.chinese).size(chinese_size));
+                                                    } else {
+                                                        // 不显示释义时，预留同等高度空间以稳定布局
+                                                        ui.add_space(chinese_size);
+                                                    }
+                                                }
+                                            });
+                                        });
+                                }
+                            }
                         }
                     } else {
                         ui.vertical_centered(|ui| {
